@@ -16,8 +16,62 @@ type Segment struct {
 	writer io.Writer
 }
 
-func NewSegment(reader io.ReadSeeker, writer io.Writer, head int64) *Segment {
-	return &Segment{index: map[string]int64{}, reader: reader, writer: writer, head: head}
+func NewSegment(reader io.ReadSeeker, writer io.Writer) *Segment {
+	index := map[string]int64{}
+	var head int64
+	for {
+		key, _, nextHead, err := readRecord(reader, head)
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			panic(err)
+		}
+
+		index[key] = head
+		head = nextHead
+	}
+
+	return &Segment{index: index, reader: reader, writer: writer, head: head}
+}
+
+func readRecord(reader io.ReadSeeker, offset int64) (string, []byte, int64, error) {
+	keyLengthByte := make([]byte, 1)
+	_, err := reader.Seek(offset, io.SeekStart)
+	if err != nil {
+		return "", nil, 0, err
+	}
+
+	_, err = reader.Read(keyLengthByte)
+	if err != nil {
+		return "", nil, 0, err
+	}
+
+	keyLength := int(keyLengthByte[0])
+	keyByte := make([]byte, keyLength)
+
+	_, err = reader.Read(keyByte)
+	if err != nil {
+		return "", nil, 0, err
+	}
+
+	key := string(keyByte)
+
+	valueLengthByte := make([]byte, 2)
+	_, err = reader.Read(valueLengthByte)
+	if err != nil {
+		return "", nil, 0, err
+	}
+
+	valueLength := binary.BigEndian.Uint16(valueLengthByte)
+	valueByte := make([]byte, valueLength)
+	_, err = reader.Read(valueByte)
+	if err != nil {
+		return "", nil, 0, err
+	}
+
+	return key, valueByte, offset + 1 + int64(len(keyByte)) + 2 + int64(len(valueByte)), nil
 }
 
 func (s *Segment) Get(ctx context.Context, key string) ([]byte, error) {
@@ -26,43 +80,16 @@ func (s *Segment) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("not found")
 	}
 
-	keyLengthByte := make([]byte, 1)
-	_, err := s.reader.Seek(offset, io.SeekStart)
+	recordKey, value, _, err := readRecord(s.reader, offset)
 	if err != nil {
 		return nil, err
 	}
 
-	_, err = s.reader.Read(keyLengthByte)
-	if err != nil {
-		return nil, err
-	}
-
-	keyLength := int(keyLengthByte[0])
-	keyByte := make([]byte, keyLength)
-
-	_, err = s.reader.Read(keyByte)
-	if err != nil {
-		return nil, err
-	}
-
-	if key != string(keyByte) {
+	if key != recordKey {
 		return nil, fmt.Errorf("key mismatch")
 	}
 
-	valueLengthByte := make([]byte, 2)
-	_, err = s.reader.Read(valueLengthByte)
-	if err != nil {
-		return nil, err
-	}
-
-	valueLength := binary.BigEndian.Uint16(valueLengthByte)
-	valueByte := make([]byte, valueLength)
-	_, err = s.reader.Read(valueByte)
-	if err != nil {
-		return nil, err
-	}
-
-	return valueByte, nil
+	return value, nil
 }
 
 func (s *Segment) Set(ctx context.Context, key string, value []byte) error {
@@ -103,13 +130,8 @@ func NewStorageKV() *StorageKV {
 		panic(err)
 	}
 
-	stat, err := file.Stat()
-	if err != nil {
-		panic(err)
-	}
-
 	segments := []*Segment{
-		NewSegment(file, file, stat.Size()),
+		NewSegment(file, file),
 	}
 	return &StorageKV{segments: segments}
 }
