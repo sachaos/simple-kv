@@ -75,7 +75,7 @@ func handleConnection(conn net.Conn) {
 		case "SET":
 			handleSetRequest(conn, message)
 		default:
-			logrus.Error("Unknown operation: %s", operation)
+			logrus.Errorf("Unknown operation: %s", operation)
 			fmt.Fprintf(conn, "ERROR unknown operation\n")
 		}
 	}
